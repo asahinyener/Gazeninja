@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Gaze Ninja – Kalman‑Smoothed Prototype</title>
+  <script src="https://webgazer.cs.brown.edu/webgazer.js"></script>
+  <style>
+    /* ---------- Layout & Typography ---------- */
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;font-family:system-ui,sans-serif;text-align:center;background:#f5f7fa;overflow:hidden}
+    h2{margin:.5rem 0}
+    button{margin:4px;padding:6px 12px;font-size:.9rem}
+    label{font-size:.9rem}
+
+    /* ---------- Game Field ---------- */
+    #calibrationArea{position:relative;width:800px;height:600px;margin:12px auto;border:2px solid #444;overflow:hidden;background:#fff}
+    .calibration-point{width:18px;height:18px;background:#f44336;border-radius:50%;position:absolute;cursor:pointer;z-index:10;transition:transform .15s ease-out;}
+    #gazeDot,#gazeDotEMA{width:14px;height:14px;border-radius:50%;position:absolute;pointer-events:none;display:none}
+    #gazeDot{background:rgba(255,0,0,.6);z-index:20}
+    #gazeDotEMA{background:rgba(0,140,255,.7);z-index:19}
+
+    /* ---------- Score & Trail ---------- */
+    #scoreBoard{position:absolute;top:10px;left:10px;background:rgba(0,0,0,.55);color:#fff;padding:4px 10px;border-radius:8px;font-size:1.05rem;z-index:0}
+    .trail-seg{position:absolute;width:6px;height:6px;border-radius:50%;background:#ffeb3b;opacity:.9;pointer-events:none;}
+    .trail-seg.fade{animation:trailFade .5s forwards}
+    @keyframes trailFade{to{transform:scale(1.3);opacity:0;}}
+
+    /* ---------- Targets ---------- */
+    .fruit{position:absolute;border-radius:50% 50% 50% 50%/60% 60% 40% 40%;box-shadow:0 4px 8px rgba(0,0,0,.25);transition:transform .2s ease-out;pointer-events:none;}
+    .fruit.sliced{animation:sliced .3s forwards}
+    @keyframes sliced{to{transform:scale(0);opacity:0;}}
+  </style>
+</head>
+<body>
+  <h2>Gaze Ninja – smoother & more accurate</h2>
+
+  <div id="calibrationArea">
+    <div id="gazeDot"></div>
+    <div id="gazeDotEMA"></div>
+  </div>
+
+  <!-- ---------- Controls ---------- -->
+  <button onclick="startCalibration()">Start Calibration</button><br/>
+  <label for="emaSlider">Extra EMA smoothing (α): <span id="emaLabel">0.20</span></label><br/>
+  <input type="range" id="emaSlider" min="0.05" max="0.50" step="0.01" value="0.20"><br/>
+  <button id="startBtn" disabled>Start Tracking</button>
+  <button id="stopBtn"  disabled>Stop Tracking</button>
+
+<script>
+/******************** DOM refs & constants ********************/
+const area = document.getElementById('calibrationArea');
+const gazeDot  = document.getElementById('gazeDot');
+const gazeDotEMA = document.getElementById('gazeDotEMA');
+const startBtn = document.getElementById('startBtn');
+const stopBtn  = document.getElementById('stopBtn');
+const emaSlider = document.getElementById('emaSlider');
+const emaLabel  = document.getElementById('emaLabel');
+
+// Calibration
+const GRID_POINTS = [ [5,5],[50,5],[95,5],[5,50],[50,50],[95,50],[5,95],[50,95],[95,95] ];
+const CLICKS_PER_POINT = 6;   // ← more samples per dot
+let calibIndex = 0, clickCount = 0, calibrated = false;
+
+// EMA
+let ALPHA = parseFloat(emaSlider.value);
+emaSlider.oninput = () => { ALPHA = parseFloat(emaSlider.value); emaLabel.textContent = ALPHA.toFixed(2); };
+let emaX = null, emaY = null;
+
+// Game constants
+const MAX_TARGETS = 3;
+const SLICE_MIN_DIST = 80;   // px
+const SLICE_MAX_TIME = 120;  // ms
+
+// Game state
+let fruits = [];  // {el,x,y,radius,speed}
+let score = 0, missed = 0;
+let playing = false, collecting = false;
+let lastFrame = null;
+let lastGazeX = null, lastGazeY = null, lastGazeTime = null;
+
+// Score board element
+const scoreBoard = document.createElement('div');
+scoreBoard.id = 'scoreBoard';
+area.appendChild(scoreBoard);
+function updateScore() { scoreBoard.textContent = `Score: ${score} | Missed: ${missed}`; }
+updateScore();
+
+/******************** Calibration helpers ********************/
+function showCalibrationPoint() {
+  const [px, py] = GRID_POINTS[calibIndex];
+  const dot = document.createElement('div');
+  dot.className = 'calibration-point';
+  dot.style.left = (px / 100 * area.offsetWidth - 9) + 'px';
+  dot.style.top  = (py / 100 * area.offsetHeight - 9) + 'px';
+  dot.onclick = (evt) => {
+    clickCount++;
+    // enlarge a bit to signal progress
+    dot.style.transform = `scale(${1 + clickCount / (CLICKS_PER_POINT * 5)})`;
+    // explicitly log the label (not strictly necessary – WebGazer does it automatically)
+    webgazer.recordScreenPosition(evt.clientX, evt.clientY, 'click');
+
+    if (clickCount >= CLICKS_PER_POINT) {
+      dot.remove();
+      calibIndex++; clickCount = 0;
+      if (calibIndex < GRID_POINTS.length) showCalibrationPoint();
+      else finishCalibration();
+    }
+  };
+  area.appendChild(dot);
+}
+
+function startCalibration() {
+  // reset state
+  calibIndex = 0; clickCount = 0; calibrated = false;
+  area.querySelectorAll('.calibration-point').forEach(n => n.remove());
+  fruits.forEach(f => f.el.remove());
+  fruits = []; playing = false; lastFrame = null;
+  emaX = emaY = lastGazeX = lastGazeY = lastGazeTime = null;
+  score = missed = 0; updateScore();
+  gazeDot.style.display = 'none'; gazeDotEMA.style.display = 'none';
+  startBtn.disabled = stopBtn.disabled = true;
+
+  showCalibrationPoint();
+}
+
+function finishCalibration() {
+  calibrated = true;
+  startBtn.disabled = stopBtn.disabled = false;
+  alert('Calibration complete! Slice away!');
+  startGame();
+}
+
+/******************** Fruit helpers ********************/
+function rand(min, max) { return Math.random() * (max - min) + min; }
+function spawnFruit() {
+  const radius = rand(25, 40);
+  const x = rand(radius, area.offsetWidth - radius);
+  const y = area.offsetHeight + radius * 1.2;
+  const speed = rand(50, 80);
+  const hue = Math.floor(rand(0, 360));
+  const el = document.createElement('div');
+  el.className = 'fruit';
+  el.style.width  = radius * 2 + 'px';
+  el.style.height = radius * 2 * 1.2 + 'px';
+  el.style.left   = (x - radius) + 'px';
+  el.style.top    = (y - radius * 1.2) + 'px';
+  el.style.background = `radial-gradient(circle at 30% 30%, hsl(${hue} 100% 85%), hsl(${hue} 100% 50%))`;
+  area.appendChild(el);
+  fruits.push({ el, x, y, radius, speed });
+}
+function updateFruits(dt) {
+  const dy = dt / 1000;
+  for (let i = fruits.length - 1; i >= 0; i--) {
+    const f = fruits[i];
+    f.y -= f.speed * dy;
+    f.el.style.top = (f.y - f.radius * 1.2) + 'px';
+    if (f.y + f.radius * 1.2 < 0) { // missed
+      f.el.remove();
+      fruits.splice(i, 1);
+      missed++; updateScore();
+    }
+  }
+  while (fruits.length < MAX_TARGETS) spawnFruit();
+}
+
+/******************** Slice helpers ********************/
+function distSegSq(px, py, x1, y1, x2, y2) {
+  const l2 = ((x2 - x1) ** 2 + (y2 - y1) ** 2) || 1;
+  let t = ((px - x1) * (x2 - x1) + (py - y1) * (y2 - y1)) / l2;
+  t = Math.max(0, Math.min(1, t));
+  const lx = x1 + t * (x2 - x1), ly = y1 + t * (y2 - y1);
+  return (px - lx) ** 2 + (py - ly) ** 2;
+}
+function handleSlice(x1, y1, x2, y2) {
+  for (let i = fruits.length - 1; i >= 0; i--) {
+    const f = fruits[i];
+    if (distSegSq(f.x, f.y, x1, y1, x2, y2) <= f.radius * f.radius) {
+      f.el.classList.add('sliced');
+      setTimeout(() => f.el.remove(), 300);
+      fruits.splice(i, 1);
+      score++; updateScore();
+    }
+  }
+  while (fruits.length < MAX_TARGETS) spawnFruit();
+  drawTrail(x1, y1, x2, y2);
+}
+function drawTrail(x1, y1, x2, y2) {
+  const seg = document.createElement('div');
+  seg.className = 'trail-seg';
+  seg.style.left = (x2 - 3) + 'px';
+  seg.style.top  = (y2 - 3) + 'px';
+  area.appendChild(seg);
+  requestAnimationFrame(() => seg.classList.add('fade'));
+  setTimeout(() => seg.remove(), 500);
+}
+
+/******************** Game control ********************/
+function startGame() {
+  playing = true;
+  fruits.forEach(f => f.el.remove());
+  fruits = [];
+  for (let i = 0; i < MAX_TARGETS; i++) spawnFruit();
+  if (!collecting) startTracking();
+  requestAnimationFrame(loop);
+}
+function loop(ts) {
+  if (!playing) return;
+  if (lastFrame === null) lastFrame = ts;
+  const dt = ts - lastFrame; lastFrame = ts;
+  updateFruits(dt);
+  requestAnimationFrame(loop);
+}
+
+/******************** Tracking control ********************/
+function startTracking() {
+  webgazer.resume();
+  collecting = true;
+  gazeDot.style.display = 'block';
+  gazeDotEMA.style.display = 'block';
+}
+function stopTracking() {
+  webgazer.pause();
+  collecting = false; playing = false;
+  gazeDot.style.display = 'none';
+  gazeDotEMA.style.display = 'none';
+}
+startBtn.onclick = () => { if (!calibrated) { alert('Calibrate first'); return; } startTracking(); };
+stopBtn.onclick  = () => stopTracking();
+
+/******************** WebGazer init ********************/
+webgazer
+  .saveDataAcrossSessions(false)   // avoid mixing stale & fresh data during dev
+  .begin()                         // starts video + model load
+  .showVideo(false)
+  .showFaceOverlay(false)
+  .showFaceFeedbackBox(false);
+// Enable Kalman filter for steadier predictions
+webgazer.applyKalmanFilter(true);
+// Optionally hide prediction point overlay that the library draws
+webgazer.showPredictionPoints(false);
+
+/* Core gaze listener – now drives slice detection & EMA after Kalman */
+webgazer.setGazeListener((data, ts) => {
+  if (!data) return;
+  const rect = area.getBoundingClientRect();
+  const lx = data.x - rect.left, ly = data.y - rect.top;
+
+  // Raw dot (Kalman output)
+  if (lx >= 0 && ly >= 0 && lx <= area.offsetWidth && ly <= area.offsetHeight) {
+    gazeDot.style.left = lx + 'px';
+    gazeDot.style.top  = ly + 'px';
+  }
+
+  // Additional short‑lag EMA on top
+  if (emaX == null) { emaX = lx; emaY = ly; }
+  else {
+    emaX = ALPHA * lx + (1 - ALPHA) * emaX;
+    emaY = ALPHA * ly + (1 - ALPHA) * emaY;
+  }
+  gazeDotEMA.style.left = emaX + 'px';
+  gazeDotEMA.style.top  = emaY + 'px';
+
+  if (!playing) return;
+
+  // Slice detection on Kalman‑smoothed gaze positions (data.x/y)
+  if (lastGazeX != null) {
+    const dist = Math.hypot(data.x - lastGazeX, data.y - lastGazeY);
+    const dt = ts - lastGazeTime;
+    if (dist > SLICE_MIN_DIST && dt < SLICE_MAX_TIME) {
+      handleSlice(lastGazeX, lastGazeY, data.x, data.y);
+    }
+  }
+  lastGazeX = data.x; lastGazeY = data.y; lastGazeTime = ts;
+});
+</script>
+</body>
+</html>
