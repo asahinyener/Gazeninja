@@ -36,8 +36,8 @@
       pointer-events: none;
       display: none;
     }
-    #gazeDot { background: rgba(255,0,0,.6); z-index: 30; }
-    #gazeDotEMA { background: rgba(0,140,255,.7); z-index: 29; }
+    #gazeDot { background: rgba(255,0,0,.6); z-index: 0; }
+    #gazeDotEMA { background: rgba(0,140,255,.7); z-index: 30; }
     .calibration-point {
       width: 18px;
       height: 18px;
@@ -67,7 +67,8 @@
   <button id="calBtn">Start Calibration</button>
 
   <script>
-  // ---- DOM & Canvas Setup ----
+  // ---- DOM & Canvas Setup ----  <script>
+  // ---- DOM & Canvas Setup (unchanged) ----
   const area    = document.getElementById('calibrationArea');
   const canvas  = document.getElementById('roomCanvas');
   const ctx     = canvas.getContext('2d');
@@ -79,20 +80,35 @@
   let emaX = null, emaY = null;
   const ALPHA = 0.20;
 
-  // ---- Furniture Hit-Regions (x,y,w,h) on 1024×768 canvas ----
+  // ---- Dwell & Scaling State ----
+  let dwellStart = 0;
+  const DWELL_THRESHOLD = 1200;       // ms to trigger selection
+  const MAX_SCALE = 1.5;              // maximum grow factor
+  const SCALE_RATE = (MAX_SCALE - 1) / DWELL_THRESHOLD;
+
+  // ---- URL Mapping for launches ----
+  const urlMap = {
+    tv:         'https://www.netflix.com',
+    bookshelf:  'https://en.wikipedia.org',
+    sofa_game:  'https://store.steampowered.com',
+    sofa_web:   'https://www.google.com',
+    phone:      'https://www.chatgpt.com',
+    files:      'https://drive.google.com'
+    // add more if needed…,
+  };
+
+  // ---- Furniture Hit-Regions (1024×768 coords) ----
   const furniture = [
     { id: 'bookshelf',  x:  44,  y: 36, w: 249, h: 526 },
-    { id: 'sofa_web',   x: 350,  y: 309, w: 127, h: 124 },
-    { id: 'sofa_game',  x: 543,  y: 301, w: 123, h: 124 },
-    { id: 'phone',      x: 704,  y: 284, w:  131, h:  125  },
-    { id: 'lamp',       x: 812,  y:  87, w:  107, h: 134 },
-    { id: 'tv',         x: 842,  y: 275, w: 171, h: 198  },
-    // { id: 'rug',        x: 200,  y: 650, w: 600, h: 100 },
-    // { id: 'files',     x: 100,  y:  50, w: 200, h: 150 },
-    { id: 'files',      x: 500,  y:  465, w:  101, h:  89 },
+    { id: 'sofa_web',   x: 350,  y:309, w: 127, h: 124 },
+    { id: 'sofa_game',  x: 543,  y:301, w: 123, h: 124 },
+    { id: 'phone',      x: 704,  y:284, w: 131, h: 125 },
+    { id: 'lamp',       x: 812,  y: 87, w: 107, h: 134 },
+    { id: 'tv',         x: 842,  y:275, w: 171, h: 198 },
+    { id: 'files',      x: 500,  y:465, w: 101, h:  89 },
   ];
 
-  // ---- Load Background Image ----
+  // ---- Load Background & Initial draw ----
   const bg = new Image();
   bg.src = 'livingroom.png';
   bg.onload = () => {
@@ -102,6 +118,7 @@
   };
 
   function resizeCanvas(){
+    // since container is fixed 1024×768 via CSS, this will remain that size
     canvas.width  = area.offsetWidth;
     canvas.height = area.offsetHeight;
     areaRect = area.getBoundingClientRect();
@@ -109,55 +126,106 @@
   }
   window.addEventListener('resize', resizeCanvas);
 
-  function draw(){
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(bg, 0, 0, canvas.width, canvas.height);
-    console.log(canvas.width);
-    console.log(canvas.height)
-    
-    if(darkMode){
-      ctx.fillStyle = 'rgba(0,0,0,0.6)';
-      ctx.fillRect(0,0,canvas.width,canvas.height);
-    }
+function draw(){
+  const cw = canvas.width,
+        ch = canvas.height;
+
+  // 1) Draw the room background
+  ctx.clearRect(0, 0, cw, ch);
+  ctx.drawImage(bg, 0, 0, cw, ch);
+
+  if (darkMode) {
+    // 2) Build a Path2D: full-canvas rect + lamp rect
+    const path = new Path2D();
+    path.rect(0, 0, cw, ch);
+
+    // map lamp coords from 1024×768 → canvas size
+    const lamp = furniture.find(f => f.id === 'lamp');
+    const sx = lamp.x * cw / 1024,
+          sy = lamp.y * ch / 768,
+          sw = lamp.w * cw / 1024,
+          sh = lamp.h * ch / 768;
+    path.rect(sx, sy, sw, sh);
+
+    // 3) Fill with even-odd rule: paints blackout but leaves lamp area untouched
+    ctx.fillStyle = 'rgba(0,0,0,0.85)';
+    ctx.fill(path, 'evenodd');  // uses the even-odd rule to create the hole :contentReference[oaicite:1]{index=1}
   }
+}
+  // ---- Highlight, Scale & Launch Logic ----
+function highlightAt(normX, normY){
+  const hit = furniture.find(f =>
+    normX >= f.x && normX <= f.x + f.w &&
+    normY >= f.y && normY <= f.y + f.h
+  );
+  const now = performance.now();
 
-  // ---- Highlight & Label ----
-  function highlightAt(x,y){
-    const hit = furniture.find(f =>
-      x >= f.x && x <= f.x + f.w &&
-      y >= f.y && y <= f.y + f.h
-    );
-
-    if(!hit){
-      if(lastId){
-        lastId = null;
-        draw();
-      }
-      return;
-    }
-
-    if(hit.id !== lastId){
-      // special: toggle dark/bright on lamp
-      if(hit.id === 'lamp'){
-        toggleDarkMode();
-      }
-      lastId = hit.id;
+  if(!hit){
+    // left region
+    dwellStart = 0;
+    if(lastId){
+      lastId = null;
       draw();
+    }
+    return;
+  }
 
-      if(hit.id !== 'lamp'){
-        // glow overlay
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(hit.x, hit.y, hit.w, hit.h);
-        ctx.fillStyle = 'rgba(255,255,200,0.4)';
-        ctx.fill();
-        ctx.restore();
+  // **NEW**: if lights are off and this isn't the lamp, ignore everything
+  if(darkMode && hit.id !== 'lamp'){
+    dwellStart = 0;
+    if(lastId){
+      lastId = null;
+      draw();       // re‐draw just the dark overlay
+    }
+    return;
+  }
 
-        // label
-        showLabel(hit.id, hit.x + hit.w/2, hit.y - 10);
-      }
+  // just entered
+  if(hit.id !== lastId){
+    dwellStart = now;
+    lastId = hit.id;
+    draw();
+  }
+
+  // compute scale factor
+  const dt = now - dwellStart;
+  const scale = Math.min(MAX_SCALE, 1 + dt * SCALE_RATE);
+
+  // build scaled rectangle in canvas px
+  const cx = hit.x + hit.w/2;
+  const cy = hit.y + hit.h/2;
+  const sw = hit.w * scale;
+  const sh = hit.h * scale;
+  const sx = (cx - sw/2) * canvas.width / 1024;
+  const sy = (cy - sh/2) * canvas.height / 768;
+  const swp = sw * canvas.width / 1024;
+  const shp = sh * canvas.height / 768;
+
+  draw();  // redraw bg + dark/punch
+
+  // glow overlay
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(sx, sy, swp, shp);
+  ctx.fillStyle = 'rgba(255,255,200,0.5)';
+  ctx.fill();
+  ctx.restore();
+
+  // label
+  showLabel(hit.id, sx + swp/2, sy - 10);
+
+  // on dwell threshold, launch once (or toggle lamp)
+  if (dt >= DWELL_THRESHOLD) {
+    dwellStart = now + 5000; // pause further triggers
+
+    if (hit.id === 'lamp') {
+      toggleDarkMode();
+    } else {
+      const url = urlMap[hit.id];
+      if (url) window.open(url, '_blank');
     }
   }
+}
 
   function showLabel(id, x, y){
     const label = id.replace('_',' ').toUpperCase();
@@ -177,6 +245,7 @@
   }
 
   // ---- Calibration (unchanged) ----
+  // … your existing calibration/grid code …
   const GRID = [[5,5],[50,5],[95,5],[5,50],[50,50],[95,50],[5,95],[50,95],[95,95]];
   const CLICKS_PER_POINT = 3;
   let calibIndex=0, clickCount=0, calibrated=false;
@@ -221,6 +290,7 @@
   calBtn.onclick = startCalibration;
 
   // ---- Gaze Listener ----
+  // ---- Gaze Listener (unchanged except highlight call) ----
   webgazer
     .setGazeListener((data,ts) => {
       if(!data) return;
@@ -241,7 +311,10 @@
       gazeDotEMA.style.top  = emaY + 'px';
       gazeDot.style.display = gazeDotEMA.style.display = 'block';
 
-      highlightAt(emaX, emaY);
+      // convert back to 1024×768 coords for hit-testing
+      const normX = emaX * 1024 / canvas.width;
+      const normY = emaY * 768  / canvas.height;
+      highlightAt(normX, normY);
     })
     .saveDataAcrossSessions(false)
     .showVideo(false)
@@ -249,11 +322,10 @@
     .showFaceFeedbackBox(false)
     .applyKalmanFilter(true)
     .showPredictionPoints(false)
-    .begin()
-    ;
+    .begin();
 
   // Auto-start calibration
   startCalibration();
   </script>
-</body>
+  </body>
 </html>
