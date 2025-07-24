@@ -36,11 +36,10 @@
       pointer-events: none;
       display: none;
     }
-    #gazeDot { background: rgba(255,0,0,.6); z-index: 0; }
-    #gazeDotEMA { background: rgba(0,140,255,.7); z-index: 30; }
+    #gazeDot { background: rgba(255,0,0,.6); z-index: 30; }
+    #gazeDotEMA { background: rgba(0,140,255,.7); z-index: 29; }
     .calibration-point {
-      width: 18px;
-      height: 18px;
+      width: 18px; height: 18px;
       background: #f44336;
       border-radius: 50%;
       position: absolute;
@@ -67,8 +66,7 @@
   <button id="calBtn">Start Calibration</button>
 
   <script>
-  // ---- DOM & Canvas Setup ----  <script>
-  // ---- DOM & Canvas Setup (unchanged) ----
+  // ---- DOM & Canvas Setup ----
   const area    = document.getElementById('calibrationArea');
   const canvas  = document.getElementById('roomCanvas');
   const ctx     = canvas.getContext('2d');
@@ -78,12 +76,12 @@
 
   let areaRect, darkMode = true, lastId = null;
   let emaX = null, emaY = null;
-  const ALPHA = 0.20;
+  const ALPHA = 0.15;
 
   // ---- Dwell & Scaling State ----
   let dwellStart = 0;
   const DWELL_THRESHOLD = 1200;       // ms to trigger selection
-  const MAX_SCALE = 1.5;              // maximum grow factor
+  const MAX_SCALE = 2.5;              // maximum grow factor
   const SCALE_RATE = (MAX_SCALE - 1) / DWELL_THRESHOLD;
 
   // ---- URL Mapping for launches ----
@@ -118,7 +116,6 @@
   };
 
   function resizeCanvas(){
-    // since container is fixed 1024×768 via CSS, this will remain that size
     canvas.width  = area.offsetWidth;
     canvas.height = area.offsetHeight;
     areaRect = area.getBoundingClientRect();
@@ -126,21 +123,22 @@
   }
   window.addEventListener('resize', resizeCanvas);
 
-function draw(){
-  const cw = canvas.width,
-        ch = canvas.height;
+  // ---- DRAW: full‐room dark + bright lamp ----
+  function draw(){
+    const cw = canvas.width,
+          ch = canvas.height;
 
-  // 1) Draw the room background
-  ctx.clearRect(0, 0, cw, ch);
-  ctx.drawImage(bg, 0, 0, cw, ch);
+    // draw room
+    ctx.clearRect(0, 0, cw, ch);
+    ctx.drawImage(bg, 0, 0, cw, ch);
 
-  if (darkMode) {
+    if (darkMode) {
     // 2) Build a Path2D: full-canvas rect + lamp rect
     const path = new Path2D();
     path.rect(0, 0, cw, ch);
 
     // map lamp coords from 1024×768 → canvas size
-    const lamp = furniture.find(f => f.id === 'lamp');
+      const lamp = furniture.find(f => f.id === 'lamp');
     const sx = lamp.x * cw / 1024,
           sy = lamp.y * ch / 768,
           sw = lamp.w * cw / 1024,
@@ -150,82 +148,96 @@ function draw(){
     // 3) Fill with even-odd rule: paints blackout but leaves lamp area untouched
     ctx.fillStyle = 'rgba(0,0,0,0.85)';
     ctx.fill(path, 'evenodd');  // uses the even-odd rule to create the hole :contentReference[oaicite:1]{index=1}
+    }
   }
-}
   // ---- Highlight, Scale & Launch Logic ----
-function highlightAt(normX, normY){
-  const hit = furniture.find(f =>
+  function highlightAt(normX, normY){
+  let hit = furniture.find(f =>
     normX >= f.x && normX <= f.x + f.w &&
     normY >= f.y && normY <= f.y + f.h
   );
-  const now = performance.now();
+    const now = performance.now();
+  if (!hit && lastId) {
+    const f = furniture.find(f => f.id === lastId);
+    if (f) {
+      const dt    = now - dwellStart;
+      const scale = Math.min(MAX_SCALE, 1 + dt * SCALE_RATE);
+      const cx    = f.x + f.w/2;
+      const cy    = f.y + f.h/2;
+      const sw    = f.w * scale;
+      const sh    = f.h * scale;
+      const x0    = cx - sw/2;
+      const y0    = cy - sh/2;
+      const x1    = cx + sw/2;
+      const y1    = cy + sh/2;
+      if (normX >= x0 && normX <= x1 &&
+          normY >= y0 && normY <= y1) {
+        hit = f;
+      }
+    }
+  }
+    if(!hit){
+      dwellStart = 0;
+      if(lastId){
+        lastId = null;
+        draw();
+      }
+      return;
+    }
 
-  if(!hit){
-    // left region
-    dwellStart = 0;
-    if(lastId){
-      lastId = null;
+    if(darkMode && hit.id !== 'lamp'){
+      dwellStart = 0;
+      if(lastId){
+        lastId = null;
+        draw();
+      }
+      return;
+    }
+
+    if(hit.id !== lastId){
+      dwellStart = now;
+      lastId = hit.id;
       draw();
     }
-    return;
-  }
 
-  // **NEW**: if lights are off and this isn't the lamp, ignore everything
-  if(darkMode && hit.id !== 'lamp'){
-    dwellStart = 0;
-    if(lastId){
-      lastId = null;
-      draw();       // re‐draw just the dark overlay
-    }
-    return;
-  }
+    // compute scale
+    const dt = now - dwellStart;
+    const scale = Math.min(MAX_SCALE, 1 + dt * SCALE_RATE);
 
-  // just entered
-  if(hit.id !== lastId){
-    dwellStart = now;
-    lastId = hit.id;
+    // glow overlay
+    const cx = hit.x + hit.w/2;
+    const cy = hit.y + hit.h/2;
+    const sw = hit.w * scale;
+    const sh = hit.h * scale;
+    const sx = (cx - sw/2) * canvas.width / 1024;
+    const sy = (cy - sh/2) * canvas.height / 768;
+    const swp = sw * canvas.width / 1024;
+    const shp = sh * canvas.height / 768;
+
     draw();
-  }
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(sx, sy, swp, shp);
+    ctx.fillStyle = 'rgba(255,255,200,0.5)';
+    ctx.fill();
+    ctx.restore();
 
-  // compute scale factor
-  const dt = now - dwellStart;
-  const scale = Math.min(MAX_SCALE, 1 + dt * SCALE_RATE);
+    // label at the ORIGINAL center
+    const labelX = (hit.x + hit.w/2) * canvas.width  / 1024;
+    const labelY = hit.y * canvas.height / 768 - 10;
+    showLabel(hit.id, labelX, labelY);
 
-  // build scaled rectangle in canvas px
-  const cx = hit.x + hit.w/2;
-  const cy = hit.y + hit.h/2;
-  const sw = hit.w * scale;
-  const sh = hit.h * scale;
-  const sx = (cx - sw/2) * canvas.width / 1024;
-  const sy = (cy - sh/2) * canvas.height / 768;
-  const swp = sw * canvas.width / 1024;
-  const shp = sh * canvas.height / 768;
-
-  draw();  // redraw bg + dark/punch
-
-  // glow overlay
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(sx, sy, swp, shp);
-  ctx.fillStyle = 'rgba(255,255,200,0.5)';
-  ctx.fill();
-  ctx.restore();
-
-  // label
-  showLabel(hit.id, sx + swp/2, sy - 10);
-
-  // on dwell threshold, launch once (or toggle lamp)
-  if (dt >= DWELL_THRESHOLD) {
-    dwellStart = now + 5000; // pause further triggers
-
-    if (hit.id === 'lamp') {
-      toggleDarkMode();
-    } else {
-      const url = urlMap[hit.id];
-      if (url) window.open(url, '_blank');
+    // dwell actions
+    if (dt >= DWELL_THRESHOLD) {
+      dwellStart = now + 5000;
+      if (hit.id === 'lamp') {
+        toggleDarkMode();
+      } else {
+        const url = urlMap[hit.id];
+        if (url) window.open(url, '_blank');
+      }
     }
   }
-}
 
   function showLabel(id, x, y){
     const label = id.replace('_',' ').toUpperCase();
@@ -245,7 +257,6 @@ function highlightAt(normX, normY){
   }
 
   // ---- Calibration (unchanged) ----
-  // … your existing calibration/grid code …
   const GRID = [[5,5],[50,5],[95,5],[5,50],[50,50],[95,50],[5,95],[50,95],[95,95]];
   const CLICKS_PER_POINT = 3;
   let calibIndex=0, clickCount=0, calibrated=false;
@@ -277,20 +288,33 @@ function highlightAt(normX, normY){
     emaX = emaY = null;
     lastId = null;
     gazeDot.style.display = gazeDotEMA.style.display = 'none';
-    if(CLICKS_PER_POINT===0) finishCalibration();
-    else showCalibrationPoint();
+    showCalibrationPoint();
   }
 
   function finishCalibration(){
     calibrated = true;
     alert('Calibration complete!');
-    startTracking();
+    // now gaze tracking begins automatically
   }
+// function startCalibration(){
+//   calibIndex = 0; clickCount = 0; calibrated = false;
+//   area.querySelectorAll('.calibration-point').forEach(n=>n.remove());
+//   emaX = emaY = null;
+//   lastId = null;
+//   gazeDot.style.display = gazeDotEMA.style.display = 'none';
+//   if(CLICKS_PER_POINT===0) finishCalibration();
+//   else showCalibrationPoint();
+// }
+
+// function finishCalibration(){
+//   calibrated = true;
+//   alert('Calibration complete!');
+//   startTracking();
+// }
 
   calBtn.onclick = startCalibration;
 
   // ---- Gaze Listener ----
-  // ---- Gaze Listener (unchanged except highlight call) ----
   webgazer
     .setGazeListener((data,ts) => {
       if(!data) return;
@@ -311,21 +335,22 @@ function highlightAt(normX, normY){
       gazeDotEMA.style.top  = emaY + 'px';
       gazeDot.style.display = gazeDotEMA.style.display = 'block';
 
-      // convert back to 1024×768 coords for hit-testing
       const normX = emaX * 1024 / canvas.width;
       const normY = emaY * 768  / canvas.height;
       highlightAt(normX, normY);
     })
     .saveDataAcrossSessions(false)
-    .showVideo(false)
-    .showFaceOverlay(false)
-    .showFaceFeedbackBox(false)
+    .showVideo(true)
+    .showFaceOverlay(true)
+    .showFaceFeedbackBox(true)
     .applyKalmanFilter(true)
     .showPredictionPoints(false)
     .begin();
+  // webgazer.setRegression("weightedRidge"); 
+webgazer.setRegression("ridge"); 
 
   // Auto-start calibration
   startCalibration();
   </script>
-  </body>
+</body>
 </html>
