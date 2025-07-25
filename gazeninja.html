@@ -344,15 +344,6 @@
       const normY = emaY * 768  / canvas.height;
       highlightAt(normX, normY);
 
-      /* ----------- store gaze samples ----------- */
-      gazeData.push({
-        x: lx.toFixed(2),
-        y: ly.toFixed(2),
-        error: data?.eyeFeatures?.left?.ellipse?.major?.toFixed(2) || "",
-        timestamp: ts,
-        targetX: normX.toFixed(2),
-        targetY: normY.toFixed(2)
-      });
     })
     .saveDataAcrossSessions(false)
     .showVideo(true)
