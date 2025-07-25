@@ -63,11 +63,8 @@
     <div id="gazeDot"></div>
     <div id="gazeDotEMA"></div>
   </div>
-  <!-- control buttons -->
-  <button id="calBtn"      style="left:10px">Start Calibration</button>
-  <button id="startBtn"    style="left:140px">Start Recording</button>
-  <button id="stopBtn"     style="left:260px">Stop Recording</button>
-  <button id="downloadBtn" style="left:370px">Download CSV</button>
+  <!-- single control button -->
+  <button id="downloadBtn">Download CSV</button>
 
   <script>
   // ---- DOM & Canvas Setup ----
@@ -76,29 +73,14 @@
   const ctx     = canvas.getContext('2d');
   const gazeDot    = document.getElementById('gazeDot');
   const gazeDotEMA = document.getElementById('gazeDotEMA');
-  const calBtn      = document.getElementById('calBtn');
-  const startBtn    = document.getElementById('startBtn');
-  const stopBtn     = document.getElementById('stopBtn');
   const downloadBtn = document.getElementById('downloadBtn');
 
   /* ---------- Recording state ---------- */
-  let collecting   = false;
+  let collecting   = true;           // start recording immediately
   let gazeData     = [];
   let currentTargetX = "", currentTargetY = "";   // calibration‑dot coords
 
-  /* start / stop / download handlers */
-  startBtn.onclick = () => {
-    webgazer.resume();
-    collecting = true;
-    gazeData   = [];
-    gazeDot.style.display = "block";
-  };
-
-  stopBtn.onclick = () => {
-    collecting = false;
-    // gazeDot.style.display = "none";
-  };
-
+  /* download handler */
   downloadBtn.onclick = () => {
     if (gazeData.length === 0) { alert("No data recorded."); return; }
     let csv = "x,y,error,timestamp,targetX,targetY\n";
@@ -112,6 +94,7 @@
     link.click();
     document.body.removeChild(link);
   };
+
   let areaRect, darkMode = true, lastId = null;
   let emaX = null, emaY = null;
   const ALPHA = 0.15;
@@ -130,7 +113,6 @@
     sofa_web:   'https://www.google.com',
     phone:      'https://www.chatgpt.com',
     files:      'https://drive.google.com'
-    // add more if needed…,
   };
 
   // ---- Furniture Hit-Regions (1024×768 coords) ----
@@ -166,54 +148,51 @@
     const cw = canvas.width,
           ch = canvas.height;
 
-    // draw room
     ctx.clearRect(0, 0, cw, ch);
     ctx.drawImage(bg, 0, 0, cw, ch);
 
     if (darkMode) {
-    // 2) Build a Path2D: full-canvas rect + lamp rect
-    const path = new Path2D();
-    path.rect(0, 0, cw, ch);
+      const path = new Path2D();
+      path.rect(0, 0, cw, ch);
 
-    // map lamp coords from 1024×768 → canvas size
       const lamp = furniture.find(f => f.id === 'lamp');
-    const sx = lamp.x * cw / 1024,
-          sy = lamp.y * ch / 768,
-          sw = lamp.w * cw / 1024,
-          sh = lamp.h * ch / 768;
-    path.rect(sx, sy, sw, sh);
+      const sx = lamp.x * cw / 1024,
+            sy = lamp.y * ch / 768,
+            sw = lamp.w * cw / 1024,
+            sh = lamp.h * ch / 768;
+      path.rect(sx, sy, sw, sh);
 
-    // 3) Fill with even-odd rule: paints blackout but leaves lamp area untouched
-    ctx.fillStyle = 'rgba(0,0,0,0.85)';
-    ctx.fill(path, 'evenodd');  // uses the even-odd rule to create the hole :contentReference[oaicite:1]{index=1}
+      ctx.fillStyle = 'rgba(0,0,0,0.85)';
+      ctx.fill(path, 'evenodd');
     }
   }
-  // ---- Highlight, Scale & Launch Logic -
+
+  // ---- Highlight, Scale & Launch Logic ----
   function highlightAt(normX, normY){
-  let hit = furniture.find(f =>
-    normX >= f.x && normX <= f.x + f.w &&
-    normY >= f.y && normY <= f.y + f.h
-  );
+    let hit = furniture.find(f =>
+      normX >= f.x && normX <= f.x + f.w &&
+      normY >= f.y && normY <= f.y + f.h
+    );
     const now = performance.now();
-  if (!hit && lastId) {
-    const f = furniture.find(f => f.id === lastId);
-    if (f) {
-      const dt    = now - dwellStart;
-      const scale = Math.min(MAX_SCALE, 1 + dt * SCALE_RATE);
-      const cx    = f.x + f.w/2;
-      const cy    = f.y + f.h/2;
-      const sw    = f.w * scale;
-      const sh    = f.h * scale;
-      const x0    = cx - sw/2;
-      const y0    = cy - sh/2;
-      const x1    = cx + sw/2;
-      const y1    = cy + sh/2;
-      if (normX >= x0 && normX <= x1 &&
-          normY >= y0 && normY <= y1) {
-        hit = f;
+    if (!hit && lastId) {
+      const f = furniture.find(f => f.id === lastId);
+      if (f) {
+        const dt    = now - dwellStart;
+        const scale = Math.min(MAX_SCALE, 1 + dt * SCALE_RATE);
+        const cx    = f.x + f.w/2;
+        const cy    = f.y + f.h/2;
+        const sw    = f.w * scale;
+        const sh    = f.h * scale;
+        const x0    = cx - sw/2;
+        const y0    = cy - sh/2;
+        const x1    = cx + sw/2;
+        const y1    = cy + sh/2;
+        if (normX >= x0 && normX <= x1 &&
+            normY >= y0 && normY <= y1) {
+          hit = f;
+        }
       }
     }
-  }
     if(!hit){
       dwellStart = 0;
       if(lastId){
@@ -238,11 +217,9 @@
       draw();
     }
 
-    // compute scale
     const dt = now - dwellStart;
     const scale = Math.min(MAX_SCALE, 1 + dt * SCALE_RATE);
 
-    // glow overlay
     const cx = hit.x + hit.w/2;
     const cy = hit.y + hit.h/2;
     const sw = hit.w * scale;
@@ -260,12 +237,10 @@
     ctx.fill();
     ctx.restore();
 
-    // label at the ORIGINAL center
     const labelX = (hit.x + hit.w/2) * canvas.width  / 1024;
     const labelY = hit.y * canvas.height / 768 - 10;
     showLabel(hit.id, labelX, labelY);
 
-    // dwell actions
     if (dt >= DWELL_THRESHOLD) {
       dwellStart = now + 5000;
       if (hit.id === 'lamp') {
@@ -332,30 +307,15 @@
   function finishCalibration(){
     calibrated = true;
     alert('Calibration complete!');
-    // now gaze tracking begins automatically
   }
-// function startCalibration(){
-//   calibIndex = 0; clickCount = 0; calibrated = false;
-//   area.querySelectorAll('.calibration-point').forEach(n=>n.remove());
-//   emaX = emaY = null;
-//   lastId = null;
-//   gazeDot.style.display = gazeDotEMA.style.display = 'none';
-//   if(CLICKS_PER_POINT===0) finishCalibration();
-//   else showCalibrationPoint();
-// }
 
-// function finishCalibration(){
-//   calibrated = true;
-//   alert('Calibration complete!');
-//   startTracking();
-// }
-
-  calBtn.onclick = startCalibration;
+  // ---- Auto‑start calibration ----
+  startCalibration();
 
   // ---- Gaze Listener ----
   webgazer
     .setGazeListener((data,ts) => {
-      if(!data) return;
+      if(!data || !collecting) return;
       const lx = data.x - areaRect.left;
       const ly = data.y - areaRect.top;
       if(lx<0||ly<0||lx>canvas.width||ly>canvas.height) return;
@@ -383,6 +343,16 @@
       const normX = emaX * 1024 / canvas.width;
       const normY = emaY * 768  / canvas.height;
       highlightAt(normX, normY);
+
+      /* ----------- store gaze samples ----------- */
+      gazeData.push({
+        x: lx.toFixed(2),
+        y: ly.toFixed(2),
+        error: data?.eyeFeatures?.left?.ellipse?.major?.toFixed(2) || "",
+        timestamp: ts,
+        targetX: normX.toFixed(2),
+        targetY: normY.toFixed(2)
+      });
     })
     .saveDataAcrossSessions(false)
     .showVideo(true)
@@ -391,11 +361,7 @@
     .applyKalmanFilter(true)
     .showPredictionPoints(false)
     .begin();
-  // webgazer.setRegression("weightedRidge"); 
-webgazer.setRegression("ridge"); 
-
-  // Auto-start calibration
-  startCalibration();
+  webgazer.setRegression("ridge");
   </script>
 </body>
 </html>
