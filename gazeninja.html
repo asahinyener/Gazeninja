@@ -369,8 +369,7 @@
       gazeData.push({
           x: lx.toFixed(2),
           y: ly.toFixed(2),
-          error: data.eyeFeatures?.left?.ellipse?.major?.toFixed(2) || "",
-          timestamp: timestamp,
+          timestamp: ts,
           targetX: emaX.toFixed(2),
           targetY: emaY.toFixed(2)
       });
