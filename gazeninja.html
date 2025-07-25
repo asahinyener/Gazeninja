@@ -63,7 +63,11 @@
     <div id="gazeDot"></div>
     <div id="gazeDotEMA"></div>
   </div>
-  <button id="calBtn">Start Calibration</button>
+  <!-- control buttons -->
+  <button id="calBtn"      style="left:10px">Start Calibration</button>
+  <button id="startBtn"    style="left:140px">Start Recording</button>
+  <button id="stopBtn"     style="left:260px">Stop Recording</button>
+  <button id="downloadBtn" style="left:370px">Download CSV</button>
 
   <script>
   // ---- DOM & Canvas Setup ----
@@ -72,8 +76,42 @@
   const ctx     = canvas.getContext('2d');
   const gazeDot    = document.getElementById('gazeDot');
   const gazeDotEMA = document.getElementById('gazeDotEMA');
-  const calBtn     = document.getElementById('calBtn');
+  const calBtn      = document.getElementById('calBtn');
+  const startBtn    = document.getElementById('startBtn');
+  const stopBtn     = document.getElementById('stopBtn');
+  const downloadBtn = document.getElementById('downloadBtn');
 
+  /* ---------- Recording state ---------- */
+  let collecting   = false;
+  let gazeData     = [];
+  let currentTargetX = "", currentTargetY = "";   // calibration‑dot coords
+
+  /* start / stop / download handlers */
+  startBtn.onclick = () => {
+    webgazer.resume();
+    collecting = true;
+    gazeData   = [];
+    gazeDot.style.display = "block";
+  };
+
+  stopBtn.onclick = () => {
+    collecting = false;
+    gazeDot.style.display = "none";
+  };
+
+  downloadBtn.onclick = () => {
+    if (gazeData.length === 0) { alert("No data recorded."); return; }
+    let csv = "x,y,error,timestamp,targetX,targetY\n";
+    gazeData.forEach(r=>{
+      csv += `${r.x},${r.y},${r.error},${r.timestamp},${r.targetX},${r.targetY}\n`;
+    });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(new Blob([csv],{type:"text/csv"}));
+    link.download = "gaze_data.csv";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
   let areaRect, darkMode = true, lastId = null;
   let emaX = null, emaY = null;
   const ALPHA = 0.15;
