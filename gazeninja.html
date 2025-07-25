@@ -83,9 +83,9 @@
   /* download handler */
   downloadBtn.onclick = () => {
     if (gazeData.length === 0) { alert("No data recorded."); return; }
-    let csv = "x,y,error,timestamp,targetX,targetY\n";
+    let csv = "x,y,timestamp,targetX,targetY\n";
     gazeData.forEach(r=>{
-      csv += `${r.x},${r.y},${r.error},${r.timestamp},${r.targetX},${r.targetY}\n`;
+      csv += `${r.x},${r.y},${r.timestamp},${r.targetX},${r.targetY}\n`;
     });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(new Blob([csv],{type:"text/csv"}));
