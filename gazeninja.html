@@ -366,6 +366,14 @@
         emaX = ALPHA*lx + (1-ALPHA)*emaX;
         emaY = ALPHA*ly + (1-ALPHA)*emaY;
       }
+      gazeData.push({
+          x: lx.toFixed(2),
+          y: ly.toFixed(2),
+          error: data.eyeFeatures?.left?.ellipse?.major?.toFixed(2) || "",
+          timestamp: timestamp,
+          targetX: emaX.toFixed(2),
+          targetY: emaY.toFixed(2)
+      });
 
       gazeDot.style.left = lx + 'px';
       gazeDot.style.top  = ly + 'px';
