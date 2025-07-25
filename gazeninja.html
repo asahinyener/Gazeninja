@@ -243,7 +243,7 @@
 
     if (dt >= DWELL_THRESHOLD) {
       dwellStart = now + 5000;
-      if (hit.id === 'lamp') {
+      if (hit.id === 'lamp' && calibrated === true) {
         toggleDarkMode();
       } else {
         const url = urlMap[hit.id];
