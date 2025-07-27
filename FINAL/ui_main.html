@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Gaze-OS Living Room</title>
+  <script src="https://webgazer.cs.brown.edu/webgazer.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      height: 100%;
+      margin: 0;
+      background: #000;
+      overflow: hidden;
+      font-family: system-ui, sans-serif;
+    }
+    #calibrationArea {
+      position: relative;
+      width: 1024px;
+      height: 768px;
+      margin: auto;
+      border: 2px solid #444;
+      overflow: hidden;
+      background: #000;
+    }
+    #roomCanvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      z-index: 10;
+    }
+    #gazeDot, #gazeDotEMA {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      position: absolute;
+      pointer-events: none;
+      display: none;
+    }
+    #gazeDot { background: rgba(255,0,0,.6); z-index: 30; }
+    #gazeDotEMA { background: rgba(0,140,255,.7); z-index: 29; }
+    .calibration-point {
+      width: 18px; height: 18px;
+      background: #f44336;
+      border-radius: 50%;
+      position: absolute;
+      cursor: pointer;
+      z-index: 50;
+      transition: transform .15s ease-out;
+    }
+    button {
+      position: absolute;
+      bottom: 10px;
+      left: 10px;
+      padding: 6px 12px;
+      font-size: .9rem;
+      z-index: 60;
+    }
+  </style>
+</head>
+<body>
+  <div id="calibrationArea">
+    <canvas id="roomCanvas"></canvas>
+    <div id="gazeDot"></div>
+    <div id="gazeDotEMA"></div>
+  </div>
+  <!-- single control button -->
+  <button id="downloadBtn">Download CSV</button>
+
+  <script>
+  // ---- DOM & Canvas Setup ----
+  const area    = document.getElementById('calibrationArea');
+  const canvas  = document.getElementById('roomCanvas');
+  const ctx     = canvas.getContext('2d');
+  const gazeDot    = document.getElementById('gazeDot');
+  const gazeDotEMA = document.getElementById('gazeDotEMA');
+  const downloadBtn = document.getElementById('downloadBtn');
+
+  /* ---------- Recording state ---------- */
+  let collecting   = true;           // start recording immediately
+  let gazeData     = [];
+  let currentTargetX = "", currentTargetY = "";   // calibration‑dot coords
+
+  /* download handler */
+  downloadBtn.onclick = () => {
+    if (gazeData.length === 0) { alert("No data recorded."); return; }
+    let csv = "x,y,timestamp,targetX,targetY\n";
+    gazeData.forEach(r=>{
+      csv += `${r.x},${r.y},${r.timestamp},${r.targetX},${r.targetY}\n`;
+    });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(new Blob([csv],{type:"text/csv"}));
+    link.download = "gaze_data.csv";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  let areaRect, darkMode = true, lastId = null;
+  let emaX = null, emaY = null;
+  const ALPHA = 0.15;
+
+  // ---- Dwell & Scaling State ----
+  let dwellStart = 0;
+  const DWELL_THRESHOLD = 1200;       // ms to trigger selection
+  const MAX_SCALE = 2.5;              // maximum grow factor
+  const SCALE_RATE = (MAX_SCALE - 1) / DWELL_THRESHOLD;
+
+  // ---- URL Mapping for launches ----
+  const urlMap = {
+    tv:         'https://www.netflix.com',
+    bookshelf:  'https://en.wikipedia.org',
+    sofa_game:  'https://store.steampowered.com',
+    sofa_web:   'https://www.google.com',
+    phone:      'https://www.chatgpt.com',
+    files:      'https://drive.google.com'
+  };
+
+  // ---- Furniture Hit-Regions (1024×768 coords) ----
+  const furniture = [
+    { id: 'bookshelf',  x:  44,  y: 36, w: 249, h: 526 },
+    { id: 'sofa_web',   x: 350,  y:309, w: 127, h: 124 },
+    { id: 'sofa_game',  x: 543,  y:301, w: 123, h: 124 },
+    { id: 'phone',      x: 704,  y:284, w: 131, h: 125 },
+    { id: 'lamp',       x: 812,  y: 87, w: 107, h: 134 },
+    { id: 'tv',         x: 842,  y:275, w: 171, h: 198 },
+    { id: 'files',      x: 500,  y:465, w: 101, h:  89 },
+  ];
+
+  // ---- Load Background & Initial draw ----
+  const bg = new Image();
+  bg.src = 'livingroom.png';
+  bg.onload = () => {
+    resizeCanvas();
+    areaRect = area.getBoundingClientRect();
+    draw();
+  };
+
+  function resizeCanvas(){
+    canvas.width  = area.offsetWidth;
+    canvas.height = area.offsetHeight;
+    areaRect = area.getBoundingClientRect();
+    draw();
+  }
+  window.addEventListener('resize', resizeCanvas);
+
+  // ---- DRAW: full‐room dark + bright lamp ----
+  function draw(){
+    const cw = canvas.width,
+          ch = canvas.height;
+
+    ctx.clearRect(0, 0, cw, ch);
+    ctx.drawImage(bg, 0, 0, cw, ch);
+
+    if (darkMode) {
+      const path = new Path2D();
+      path.rect(0, 0, cw, ch);
+
+      const lamp = furniture.find(f => f.id === 'lamp');
+      const sx = lamp.x * cw / 1024,
+            sy = lamp.y * ch / 768,
+            sw = lamp.w * cw / 1024,
+            sh = lamp.h * ch / 768;
+      path.rect(sx, sy, sw, sh);
+
+      ctx.fillStyle = 'rgba(0,0,0,0.85)';
+      ctx.fill(path, 'evenodd');
+    }
+  }
+
+  // ---- Highlight, Scale & Launch Logic ----
+  function highlightAt(normX, normY){
+    let hit = furniture.find(f =>
+      normX >= f.x && normX <= f.x + f.w &&
+      normY >= f.y && normY <= f.y + f.h
+    );
+    const now = performance.now();
+    if (!hit && lastId) {
+      const f = furniture.find(f => f.id === lastId);
+      if (f) {
+        const dt    = now - dwellStart;
+        const scale = Math.min(MAX_SCALE, 1 + dt * SCALE_RATE);
+        const cx    = f.x + f.w/2;
+        const cy    = f.y + f.h/2;
+        const sw    = f.w * scale;
+        const sh    = f.h * scale;
+        const x0    = cx - sw/2;
+        const y0    = cy - sh/2;
+        const x1    = cx + sw/2;
+        const y1    = cy + sh/2;
+        if (normX >= x0 && normX <= x1 &&
+            normY >= y0 && normY <= y1) {
+          hit = f;
+        }
+      }
+    }
+    if(!hit){
+      dwellStart = 0;
+      if(lastId){
+        lastId = null;
+        draw();
+      }
+      return;
+    }
+
+    if(darkMode && hit.id !== 'lamp'){
+      dwellStart = 0;
+      if(lastId){
+        lastId = null;
+        draw();
+      }
+      return;
+    }
+
+    if(hit.id !== lastId){
+      dwellStart = now;
+      lastId = hit.id;
+      draw();
+    }
+
+    const dt = now - dwellStart;
+    const scale = Math.min(MAX_SCALE, 1 + dt * SCALE_RATE);
+
+    const cx = hit.x + hit.w/2;
+    const cy = hit.y + hit.h/2;
+    const sw = hit.w * scale;
+    const sh = hit.h * scale;
+    const sx = (cx - sw/2) * canvas.width / 1024;
+    const sy = (cy - sh/2) * canvas.height / 768;
+    const swp = sw * canvas.width / 1024;
+    const shp = sh * canvas.height / 768;
+
+    // Redraw background/dark mode state to keep scene fresh
+    draw();
+
+    // ***** INVISIBLE HITBOX CHANGE *****
+    // Previously, a semi-transparent rectangle and a label were drawn here to highlight the hitbox.
+    // To make hitboxes fully invisible (no fill, no outline, no label), we skip any drawing.
+    // (We keep all detection and dwell/launch logic unchanged.)
+    // -----------------------------------
+
+    // No label call (kept invisible):
+    // const labelX = (hit.x + hit.w/2) * canvas.width  / 1024;
+    // const labelY = hit.y * canvas.height / 768 - 10;
+    // showLabel(hit.id, labelX, labelY);
+
+    if (dt >= DWELL_THRESHOLD) {
+      dwellStart = now + 5000;
+      if (hit.id === 'lamp' && calibrated === true) {
+        toggleDarkMode();
+      } else {
+        const url = urlMap[hit.id];
+        if (url) window.open(url, '_blank');
+      }
+    }
+  }
+
+  function showLabel(id, x, y){
+    const label = id.replace('_',' ').toUpperCase();
+    ctx.save();
+    ctx.font = '18px sans-serif';
+    ctx.fillStyle = 'white';
+    ctx.strokeStyle = 'black';
+    ctx.lineWidth = 2;
+    ctx.strokeText(label, x - 40, y);
+    ctx.fillText(label, x - 40, y);
+    ctx.restore();
+  }
+
+  function toggleDarkMode(){
+    darkMode = !darkMode;
+    draw();
+  }
+
+  // ---- Calibration (unchanged) ----
+  const GRID = [[5,5],[50,5],[95,5],[5,50],[50,50],[95,50],[5,95],[50,95],[95,95]];
+  const CLICKS_PER_POINT = 3;
+  let calibIndex=0, clickCount=0, calibrated=false;
+
+  function showCalibrationPoint(){
+    const [px,py] = GRID[calibIndex];
+    const dot = document.createElement('div');
+    dot.className = 'calibration-point';
+    dot.style.left = (px/100*area.offsetWidth - 9) + 'px';
+    dot.style.top  = (py/100*area.offsetHeight - 9) + 'px';
+    dot.onclick = e => {
+      clickCount++;
+      dot.style.transform = `scale(${1 + clickCount/(CLICKS_PER_POINT*5)})`;
+      webgazer.recordScreenPosition(e.clientX, e.clientY, 'click');
+      if(clickCount >= CLICKS_PER_POINT){
+        dot.remove();
+        calibIndex++;
+        clickCount = 0;
+        if(calibIndex < GRID.length) showCalibrationPoint();
+        else finishCalibration();
+      }
+    };
+    area.appendChild(dot);
+  }
+
+  function startCalibration(){
+    calibIndex = 0; clickCount = 0; calibrated = false;
+    area.querySelectorAll('.calibration-point').forEach(n=>n.remove());
+    emaX = emaY = null;
+    lastId = null;
+    // gazeDot.style.display = gazeDotEMA.style.display = 'none';
+    showCalibrationPoint();
+  }
+
+  function finishCalibration(){
+    calibrated = true;
+    alert('Calibration complete!');
+  }
+
+  // ---- Auto‑start calibration ----
+  startCalibration();
+
+  // ---- Gaze Listener ----
+  webgazer
+    .setGazeListener((data,ts) => {
+      if(!data || !collecting) return;
+      const lx = data.x - areaRect.left;
+      const ly = data.y - areaRect.top;
+      if(lx<0||ly<0||lx>canvas.width||ly>canvas.height) return;
+
+      if(emaX===null){
+        emaX = lx; emaY = ly;
+      } else {
+        emaX = ALPHA*lx + (1-ALPHA)*emaX;
+        emaY = ALPHA*ly + (1-ALPHA)*emaY;
+      }
+      gazeData.push({
+          x: lx.toFixed(2),
+          y: ly.toFixed(2),
+          timestamp: ts,
+          targetX: emaX.toFixed(2),
+          targetY: emaY.toFixed(2)
+      });
+
+      gazeDot.style.left = lx + 'px';
+      gazeDot.style.top  = ly + 'px';
+      gazeDotEMA.style.left = emaX + 'px';
+      gazeDotEMA.style.top  = emaY + 'px';
+      gazeDot.style.display = gazeDotEMA.style.display = 'block';
+
+      const normX = emaX * 1024 / canvas.width;
+      const normY = emaY * 768  / canvas.height;
+      highlightAt(normX, normY);
+
+    })
+    .saveDataAcrossSessions(false)
+    .showVideo(true)
+    .showFaceOverlay(true)
+    .showFaceFeedbackBox(true)
+    .applyKalmanFilter(true)
+    .showPredictionPoints(false)
+    .begin();
+  webgazer.setRegression("ridge");
+  </script>
+</body>
+</html>
