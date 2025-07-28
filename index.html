@@ -137,9 +137,9 @@
   /* download handler */
   downloadBtn.onclick = () => {
     if (gazeData.length === 0) { alert("No data recorded."); return; }
-    let csv = "x,y,timestamp,targetX,targetY,mode\n";
+    let csv = "x,y,timestamp,targetX,targetY,mode,lasthit\n";
     gazeData.forEach(r=>{
-      csv += `${r.x},${r.y},${r.timestamp},${r.targetX},${r.targetY},${r.mode||''}\n`;
+      csv += `${r.x},${r.y},${r.timestamp},${r.targetX},${r.targetY},${r.mode||''},${r.lasthit||''}\n`;
     });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(new Blob([csv],{type:"text/csv"}));
@@ -437,12 +437,13 @@ function highlightAt(coords) {
       }
       
       gazeData.push({
-          x: lx.toFixed(2),
-          y: ly.toFixed(2),
-          timestamp: ts,
-          targetX: emaX.toFixed(2),
-          targetY: emaY.toFixed(2),
-          mode: (FEATURES.growingAOI ? 'g' : '') + (FEATURES.use_kalman ? 'k' : '') + (FEATURES.emaInHitTest ? 'e' : '')
+        x: lx.toFixed(2),
+        y: ly.toFixed(2),
+        timestamp: ts,
+        targetX: emaX.toFixed(2),
+        targetY: emaY.toFixed(2),
+        mode: (FEATURES.growingAOI ? 'g' : '') + (FEATURES.use_kalman ? 'k' : '') + (FEATURES.emaInHitTest ? 'e' : ''),
+        lasthit: lastId || ''
       });
 
       gazeDot.style.left = lx + 'px';
