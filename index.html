@@ -75,16 +75,63 @@
   const gazeDotEMA = document.getElementById('gazeDotEMA');
   const downloadBtn = document.getElementById('downloadBtn');
 
+// euroFilter.js
+
+  class OneEuroFilter {
+    constructor(freq, minCutoff = 1.0, beta = 0.0, dCutoff = 1.0) {
+      this.freq = freq;
+      this.minCutoff = minCutoff;
+      this.beta = beta;
+      this.dCutoff = dCutoff;
+      this.lastTime = null;
+      this.lastValue = null;
+      this.lastDeriv = 0;
+    }
+
+    alpha(cutoff) {
+      const tau = 1.0 / (2 * Math.PI * cutoff);
+      const te = 1.0 / this.freq;
+      return 1.0 / (1.0 + tau / te);
+    }
+
+    filter(value, timestamp) {
+      if (this.lastTime === null) {
+        this.lastTime = timestamp;
+        this.lastValue = value;
+        return value;
+      }
+
+      const dt = (timestamp - this.lastTime) / 1000;
+      this.freq = 1.0 / dt;
+      const deriv = (value - this.lastValue) * this.freq;
+      const alphaD = this.alpha(this.dCutoff);
+      this.lastDeriv = alphaD * deriv + (1 - alphaD) * this.lastDeriv;
+
+      const cutoff = this.minCutoff + this.beta * Math.abs(this.lastDeriv);
+      const alpha = this.alpha(cutoff);
+      const filtered = alpha * value + (1 - alpha) * this.lastValue;
+
+      this.lastValue = filtered;
+      this.lastTime = timestamp;
+      return filtered;
+    }
+  }
+
+  
   /* ---------- Recording state ---------- */
   let collecting   = true;           // start recording immediately
   let gazeData     = [];
   let currentTargetX = "", currentTargetY = "";   // calibration‑dot coords
   const FEATURES = {
-  growingAOI: true,     // enlarge AOI during dwell for hit detection & highlight
-  emaInHitTest: true,   // use EMA-smoothed gaze for hit-detection (vs raw)
-  growAfterMs: 120 ,     // wait a bit before growth starts
-  use_kalman: false
+    growingAOI: true,     // enlarge AOI during dwell for hit detection & highlight
+    emaInHitTest: true,   // use EMA-smoothed gaze for hit-detection (vs raw)
+    growAfterMs: 120 ,     // wait a bit before growth starts
+    use_kalman: true,
+    use_euro: false
   };
+  let euroX = new OneEuroFilter(60);
+  let euroY = new OneEuroFilter(60);
+  // FEATURES.use_euro = true;
   let needsRedraw = true;
   let rafScheduled = false;
   /* download handler */
@@ -108,7 +155,7 @@
 
   // ---- Dwell & Scaling State ----
   let dwellStart = 0;
-  const DWELL_THRESHOLD = 1200;       // ms to trigger selection
+  const DWELL_THRESHOLD = 800;       // ms to trigger selection
   const MAX_SCALE = 2.5;              // maximum grow factor
   const SCALE_RATE = (MAX_SCALE - 1) / DWELL_THRESHOLD;
 
@@ -363,6 +410,10 @@ function highlightAt(coords) {
     webgazer.applyKalmanFilter(FEATURES.use_kalman);
     console.log('use_kalman:', FEATURES.use_kalman);
   }
+  if (e.key === '1') {
+  FEATURES.use_euro = !FEATURES.use_euro;
+  console.log('use_euro:', FEATURES.use_euro);
+  }
   });
   webgazer
     .setGazeListener((data,ts) => {
@@ -370,13 +421,21 @@ function highlightAt(coords) {
       const lx = data.x - areaRect.left;
       const ly = data.y - areaRect.top;
       if(lx<0||ly<0||lx>canvas.width||ly>canvas.height) return;
-
-      if(emaX===null){
-        emaX = lx; emaY = ly;
+      let rawx, rawy;
+      if (FEATURES.use_euro) {
+        rawx = euroX.filter(lx, ts);
+        rawy = euroY.filter(ly, ts);
       } else {
-        emaX = ALPHA*lx + (1-ALPHA)*emaX;
-        emaY = ALPHA*ly + (1-ALPHA)*emaY;
+        rawx = lx;
+        rawy = ly;
       }
+      if (emaX === null) {
+          emaX = rawx; emaY = rawy;
+        } else {
+          emaX = ALPHA * rawx + (1 - ALPHA) * emaX;
+          emaY = ALPHA * rawy + (1 - ALPHA) * emaY;
+      }
+      
       gazeData.push({
           x: lx.toFixed(2),
           y: ly.toFixed(2),
