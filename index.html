@@ -414,6 +414,11 @@ function highlightAt(coords) {
   FEATURES.use_euro = !FEATURES.use_euro;
   console.log('use_euro:', FEATURES.use_euro);
   }
+  if (e.key === 'c') {
+  darkMode = true;
+  startCalibration();
+  console.log('calib started:', FEATURES.use_euro);
+  }
   });
   webgazer
     .setGazeListener((data,ts) => {
