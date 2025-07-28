@@ -137,9 +137,9 @@
   /* download handler */
   downloadBtn.onclick = () => {
     if (gazeData.length === 0) { alert("No data recorded."); return; }
-    let csv = "x,y,timestamp,targetX,targetY,mode,hitGrow,hitExact\n";
+    let csv = "x,y,timestamp,targetX,targetY,mode,lasthit,hitGrow,hitExact\n";
     gazeData.forEach(r=>{
-      csv += `${r.x},${r.y},${r.timestamp},${r.targetX},${r.targetY},${r.mode||''},${r.hitGrow||0},${r.hitExact||0}\n`;
+      csv += `${r.x},${r.y},${r.timestamp},${r.targetX},${r.targetY},${r.mode||''},${r.lasthit||''},${r.hitGrow||0},${r.hitExact||0}\n`;
     });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(new Blob([csv],{type:"text/csv"}));
@@ -489,6 +489,7 @@ function highlightAt(coords) {
           targetX: normEmaX.toFixed(2),
           targetY: normEmaY.toFixed(2),
           mode: (FEATURES.growingAOI ? 'g' : '') + (FEATURES.use_kalman ? 'k' : '') + (FEATURES.emaInHitTest ? 'e' : ''),
+          lasthit: lastId || '',
           hitGrow: growHit ? 1 : 0 ,
           hitExact: exactHit ? 1 : 0        
         });
