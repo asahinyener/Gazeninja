@@ -138,9 +138,9 @@
   /* download handler */
   downloadBtn.onclick = () => {
     if (gazeData.length === 0) { alert("No data recorded."); return; }
-    let csv = "x,y,timestamp,targetX,targetY,mode,lasthit\n";
+    let csv = "x,y,timestamp,targetX,targetY,mode,lasthit,hitGrow,hitExact\n";
     gazeData.forEach(r=>{
-      csv += `${r.x},${r.y},${r.timestamp},${r.targetX},${r.targetY},${r.mode||''},${r.lasthit||''}\n`;
+      csv += `${r.x},${r.y},${r.timestamp},${r.targetX},${r.targetY},${r.mode||''},${r.lasthit||''},${r.hitGrow||0},${r.hitExact||0}\n`;
     });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(new Blob([csv],{type:"text/csv"}));
@@ -180,6 +180,29 @@
     { id: 'tv',         x: 842,  y:275, w: 171, h: 198 },
     { id: 'files',      x: 500,  y:465, w: 101, h:  89 },
   ];
+
+  function getHitStatus(nx, ny) {
+  // --- exact (1×) bounding box -------------
+  const exactHit = furniture.find(f =>
+    nx >= f.x && nx <= f.x + f.w &&
+    ny >= f.y && ny <= f.y + f.h
+  ) !== undefined;
+
+  // --- MAX_SCALE (=2.5×) bounding box ------
+  const growHit  = furniture.find(f => {
+    const cx = f.x + f.w / 2,
+          cy = f.y + f.h / 2,
+          sw = f.w * MAX_SCALE,
+          sh = f.h * MAX_SCALE;
+    const x0 = cx - sw / 2,
+          y0 = cy - sh / 2,
+          x1 = cx + sw / 2,
+          y1 = cy + sh / 2;
+    return nx >= x0 && nx <= x1 && ny >= y0 && ny <= y1;
+  }) !== undefined;
+
+  return { exactHit, growHit };
+  }
 
   // ---- Load Background & Initial draw ----
   const bg = new Image();
@@ -449,30 +472,41 @@ function highlightAt(coords) {
           emaY = ALPHA * rawy + (1 - ALPHA) * emaY;
       }
       
-      gazeData.push({
-        x: lx.toFixed(2),
-        y: ly.toFixed(2),
-        timestamp: ts,
-        targetX: emaX.toFixed(2),
-        targetY: emaY.toFixed(2),
-        mode: (FEATURES.growingAOI ? 'g' : '') + (FEATURES.use_kalman ? 'k' : '') + (FEATURES.emaInHitTest ? 'e' : ''),
-        lasthit: lastId || ''
-      });
-
       gazeDot.style.left = lx + 'px';
       gazeDot.style.top  = ly + 'px';
       gazeDotEMA.style.left = emaX + 'px';
       gazeDotEMA.style.top  = emaY + 'px';
       gazeDot.style.display = gazeDotEMA.style.display = 'block';
-
-      const normX = emaX * 1024 / canvas.width;
-      const normY = emaY * 768  / canvas.height;
-      // highlightAt(normX, normY);
+      
       const normRawX = lx  * 1024 / canvas.width;
       const normRawY = ly  * 768  / canvas.height;
       const normEmaX = emaX * 1024 / canvas.width;
       const normEmaY = emaY * 768  / canvas.height;
-
+      
+      const { exactHit, growHit } = getHitStatus(
+        FEATURES.emaInHitTest ? normEmaX : normRawX,
+        FEATURES.emaInHitTest ? normEmaY : normRawY
+      );
+      gazeData.push({ 
+          x: normRawX.toFixed(2),
+          y: normRawY.toFixed(2),
+          timestamp: ts,
+          targetX: normEmaX.toFixed(2),
+          targetY: normEmaY.toFixed(2),
+          mode: (FEATURES.growingAOI ? 'g' : '') + (FEATURES.use_kalman ? 'k' : '') + (FEATURES.emaInHitTest ? 'e' : ''),
+          lasthit: lastId || '',
+          hitGrow: growHit ? 1 : 0 ,
+          hitExact: exactHit ? 1 : 0        
+        });
+      
+      if (FEATURES.use_euro) {
+        gazeDot.style.backgroundColor = 'rgba(0,140,255,.7)';
+        gazeDotEMA.style.backgroundColor = 'rgba(255,0,0,.6)';
+      } else {
+        gazeDot.style.backgroundColor = 'rgba(255,0,0,.6)';
+        gazeDotEMA.style.backgroundColor = 'rgba(0,140,255,.7)';
+      }
+      
       highlightAt({
         rawX: normRawX, rawY: normRawY,
         emaX: normEmaX, emaY: normEmaY
