@@ -134,6 +134,7 @@
   // FEATURES.use_euro = true;
   let needsRedraw = true;
   let rafScheduled = false;
+  let windowIsFocused = true;
   /* download handler */
   downloadBtn.onclick = () => {
     if (gazeData.length === 0) { alert("No data recorded."); return; }
@@ -219,6 +220,13 @@
     draw();
   }
   window.addEventListener('resize', resizeCanvas);
+  window.addEventListener('blur', () => {
+    windowIsFocused = false;
+  });
+
+  window.addEventListener('focus', () => {
+    windowIsFocused = true;
+  });
   let currentHighlight = null;
   function requestRedraw() {
     if (!rafScheduled) {
@@ -351,7 +359,7 @@ function highlightAt(coords) {
       toggleDarkMode();
     } else {
       const url = urlMap[hit.id];
-      if (url) window.open(url, '_blank');
+      if (url && windowIsFocused) window.open(url, '_blank');
     }
   }
 }
@@ -470,9 +478,6 @@ function highlightAt(coords) {
       gazeDotEMA.style.top  = emaY + 'px';
       gazeDot.style.display = gazeDotEMA.style.display = 'block';
       
-      const normX = emaX * 1024 / canvas.width;
-      const normY = emaY * 768  / canvas.height;
-      // highlightAt(normX, normY);
       const normRawX = lx  * 1024 / canvas.width;
       const normRawY = ly  * 768  / canvas.height;
       const normEmaX = emaX * 1024 / canvas.width;
