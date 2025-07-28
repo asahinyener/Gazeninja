@@ -85,6 +85,8 @@
   growAfterMs: 120 ,     // wait a bit before growth starts
   use_kalman: false
   };
+  let needsRedraw = true;
+  let rafScheduled = false;
   /* download handler */
   downloadBtn.onclick = () => {
     if (gazeData.length === 0) { alert("No data recorded."); return; }
@@ -147,7 +149,15 @@
     draw();
   }
   window.addEventListener('resize', resizeCanvas);
-
+  function requestRedraw() {
+    if (!rafScheduled) {
+      rafScheduled = true;
+      requestAnimationFrame(() => {
+        draw();
+        rafScheduled = false;
+      });
+    }
+  }
   // ---- DRAW: full‐room dark + bright lamp ----
   function draw(){
     const cw = canvas.width,
@@ -203,7 +213,7 @@
       dwellStart = 0;
       if(lastId){
         lastId = null;
-        draw();
+        requestRedraw();
       }
       return;
     }
@@ -212,7 +222,7 @@
       dwellStart = 0;
       if(lastId){
         lastId = null;
-        draw();
+        requestRedraw();;
       }
       return;
     }
@@ -220,7 +230,7 @@
     if(hit.id !== lastId){
       dwellStart = now;
       lastId = hit.id;
-      draw();
+      requestRedraw();;
     }
 
     const dt = now - dwellStart;
@@ -235,7 +245,7 @@
     const swp = sw * canvas.width / 1024;
     const shp = sh * canvas.height / 768;
 
-    draw();
+    requestRedraw();
     ctx.save();
     ctx.beginPath();
     ctx.rect(sx, sy, swp, shp);
@@ -272,7 +282,7 @@
 
   function toggleDarkMode(){
     darkMode = !darkMode;
-    draw();
+    requestRedraw();
   }
 
   // ---- Calibration (unchanged) ----
