@@ -75,16 +75,65 @@
   const gazeDotEMA = document.getElementById('gazeDotEMA');
   const downloadBtn = document.getElementById('downloadBtn');
 
+// euroFilter.js
+
+  class OneEuroFilter {
+    constructor(freq, minCutoff = 1.0, beta = 0.0, dCutoff = 1.0) {
+      this.freq = freq;
+      this.minCutoff = minCutoff;
+      this.beta = beta;
+      this.dCutoff = dCutoff;
+      this.lastTime = null;
+      this.lastValue = null;
+      this.lastDeriv = 0;
+    }
+
+    alpha(cutoff) {
+      const tau = 1.0 / (2 * Math.PI * cutoff);
+      const te = 1.0 / this.freq;
+      return 1.0 / (1.0 + tau / te);
+    }
+
+    filter(value, timestamp) {
+      if (this.lastTime === null) {
+        this.lastTime = timestamp;
+        this.lastValue = value;
+        return value;
+      }
+
+      const dt = (timestamp - this.lastTime) / 1000;
+      this.freq = 1.0 / dt;
+      const deriv = (value - this.lastValue) * this.freq;
+      const alphaD = this.alpha(this.dCutoff);
+      this.lastDeriv = alphaD * deriv + (1 - alphaD) * this.lastDeriv;
+
+      const cutoff = this.minCutoff + this.beta * Math.abs(this.lastDeriv);
+      const alpha = this.alpha(cutoff);
+      const filtered = alpha * value + (1 - alpha) * this.lastValue;
+
+      this.lastValue = filtered;
+      this.lastTime = timestamp;
+      return filtered;
+    }
+  }
+
+  
   /* ---------- Recording state ---------- */
   let collecting   = true;           // start recording immediately
   let gazeData     = [];
   let currentTargetX = "", currentTargetY = "";   // calibration‑dot coords
   const FEATURES = {
-  growingAOI: true,     // enlarge AOI during dwell for hit detection & highlight
-  emaInHitTest: true,   // use EMA-smoothed gaze for hit-detection (vs raw)
-  growAfterMs: 120 ,     // wait a bit before growth starts
-  use_kalman: false
+    growingAOI: true,     // enlarge AOI during dwell for hit detection & highlight
+    emaInHitTest: true,   // use EMA-smoothed gaze for hit-detection (vs raw)
+    growAfterMs: 120 ,     // wait a bit before growth starts
+    use_kalman: true,
+    use_euro: false
   };
+  let euroX = new OneEuroFilter(60);
+  let euroY = new OneEuroFilter(60);
+  // FEATURES.use_euro = true;
+  let needsRedraw = true;
+  let rafScheduled = false;
   /* download handler */
   downloadBtn.onclick = () => {
     if (gazeData.length === 0) { alert("No data recorded."); return; }
@@ -106,7 +155,7 @@
 
   // ---- Dwell & Scaling State ----
   let dwellStart = 0;
-  const DWELL_THRESHOLD = 1200;       // ms to trigger selection
+  const DWELL_THRESHOLD = 800;       // ms to trigger selection
   const MAX_SCALE = 2.5;              // maximum grow factor
   const SCALE_RATE = (MAX_SCALE - 1) / DWELL_THRESHOLD;
 
@@ -147,95 +196,51 @@
     draw();
   }
   window.addEventListener('resize', resizeCanvas);
-
-  // ---- DRAW: full‐room dark + bright lamp ----
-  function draw(){
-    const cw = canvas.width,
-          ch = canvas.height;
-
-    ctx.clearRect(0, 0, cw, ch);
-    ctx.drawImage(bg, 0, 0, cw, ch);
-
-    if (darkMode) {
-      const path = new Path2D();
-      path.rect(0, 0, cw, ch);
-
-      const lamp = furniture.find(f => f.id === 'lamp');
-      const sx = lamp.x * cw / 1024,
-            sy = lamp.y * ch / 768,
-            sw = lamp.w * cw / 1024,
-            sh = lamp.h * ch / 768;
-      path.rect(sx, sy, sw, sh);
-
-      ctx.fillStyle = 'rgba(0,0,0,0.85)';
-      ctx.fill(path, 'evenodd');
+  let currentHighlight = null;
+  function requestRedraw() {
+    if (!rafScheduled) {
+      rafScheduled = true;
+      requestAnimationFrame(() => {
+        draw();
+        rafScheduled = false;
+      });
     }
   }
+  // ---- DRAW: full‐room dark + bright lamp ----
+function draw() {
+  const cw = canvas.width,
+        ch = canvas.height;
 
-  // ---- Highlight, Scale & Launch Logic ----
-  function highlightAt(coords){
-    const nx = FEATURES.emaInHitTest ? coords.emaX : coords.rawX;
-    const ny = FEATURES.emaInHitTest ? coords.emaY : coords.rawY;
-    let hit = furniture.find(f =>
-      nx >= f.x && nx <= f.x + f.w &&
-      ny >= f.y && ny <= f.y + f.h
-    );
-    const now = performance.now();
-    if (!hit && lastId && FEATURES.growingAOI && dwellStart > 0 && (now - dwellStart) >= FEATURES.growAfterMs) {
-      const f = furniture.find(f => f.id === lastId);
-      if (f) {
-        const dt    = now - dwellStart;
-        const scale = Math.min(MAX_SCALE, 1 + dt * SCALE_RATE);
-        const cx    = f.x + f.w/2;
-        const cy    = f.y + f.h/2;
-        const sw    = f.w * scale;
-        const sh    = f.h * scale;
-        const x0    = cx - sw/2;
-        const y0    = cy - sh/2;
-        const x1    = cx + sw/2;
-        const y1    = cy + sh/2;
-        if (nx >= x0 && nx <= x1 && ny >= y0 &&  ny <= y1) {
-        hit = f;
-        }
-      }
-    }
-    if(!hit){
-      dwellStart = 0;
-      if(lastId){
-        lastId = null;
-        draw();
-      }
-      return;
-    }
+  ctx.clearRect(0, 0, cw, ch);
+  ctx.drawImage(bg, 0, 0, cw, ch);
 
-    if(darkMode && hit.id !== 'lamp'){
-      dwellStart = 0;
-      if(lastId){
-        lastId = null;
-        draw();
-      }
-      return;
-    }
+  if (darkMode) {
+    const path = new Path2D();
+    path.rect(0, 0, cw, ch);
 
-    if(hit.id !== lastId){
-      dwellStart = now;
-      lastId = hit.id;
-      draw();
-    }
+    const lamp = furniture.find(f => f.id === 'lamp');
+    const sx = lamp.x * cw / 1024,
+          sy = lamp.y * ch / 768,
+          sw = lamp.w * cw / 1024,
+          sh = lamp.h * ch / 768;
+    path.rect(sx, sy, sw, sh);
 
-    const dt = now - dwellStart;
-    const scale = FEATURES.growingAOI ? Math.min(MAX_SCALE, 1 + dt * SCALE_RATE) : 1;
+    ctx.fillStyle = 'rgba(0,0,0,0.85)';
+    ctx.fill(path, 'evenodd');
+  }
 
-    const cx = hit.x + hit.w/2;
-    const cy = hit.y + hit.h/2;
-    const sw = hit.w * scale;
-    const sh = hit.h * scale;
-    const sx = (cx - sw/2) * canvas.width / 1024;
-    const sy = (cy - sh/2) * canvas.height / 768;
-    const swp = sw * canvas.width / 1024;
-    const shp = sh * canvas.height / 768;
+  // ---- Highlight box and label ----
+  if (currentHighlight) {
+    const { x, y, w, h, scale, label } = currentHighlight;
+    const cx = x + w / 2;
+    const cy = y + h / 2;
+    const sw = w * scale;
+    const sh = h * scale;
+    const sx = (cx - sw / 2) * cw / 1024;
+    const sy = (cy - sh / 2) * ch / 768;
+    const swp = sw * cw / 1024;
+    const shp = sh * ch / 768;
 
-    draw();
     ctx.save();
     ctx.beginPath();
     ctx.rect(sx, sy, swp, shp);
@@ -243,20 +248,91 @@
     ctx.fill();
     ctx.restore();
 
-    const labelX = (hit.x + hit.w/2) * canvas.width  / 1024;
-    const labelY = hit.y * canvas.height / 768 - 10;
-    showLabel(hit.id, labelX, labelY);
+    const labelX = cx * cw / 1024;
+    const labelY = y * ch / 768 - 10;
 
-    if (dt >= DWELL_THRESHOLD) {
-      dwellStart = now + 2500;
-      if (hit.id === 'lamp' && calibrated === true) {
-        toggleDarkMode();
-      } else {
-        const url = urlMap[hit.id];
-        if (url) window.open(url, '_blank');
+    ctx.save();
+    ctx.font = '18px sans-serif';
+    ctx.fillStyle = 'white';
+    ctx.strokeStyle = 'black';
+    ctx.lineWidth = 2;
+    ctx.strokeText(label, labelX - 40, labelY);
+    ctx.fillText(label, labelX - 40, labelY);
+    ctx.restore();
+  }
+}
+
+
+  // ---- Highlight, Scale & Launch Logic ----
+function highlightAt(coords) {
+  const nx = FEATURES.emaInHitTest ? coords.emaX : coords.rawX;
+  const ny = FEATURES.emaInHitTest ? coords.emaY : coords.rawY;
+  let hit = furniture.find(f =>
+    nx >= f.x && nx <= f.x + f.w &&
+    ny >= f.y && ny <= f.y + f.h
+  );
+
+  const now = performance.now();
+
+  if (!hit && lastId && FEATURES.growingAOI && dwellStart > 0 && (now - dwellStart) >= FEATURES.growAfterMs) {
+    const f = furniture.find(f => f.id === lastId);
+    if (f) {
+      const dt = now - dwellStart;
+      const scale = Math.min(MAX_SCALE, 1 + dt * SCALE_RATE);
+      const cx = f.x + f.w / 2;
+      const cy = f.y + f.h / 2;
+      const sw = f.w * scale;
+      const sh = f.h * scale;
+      const x0 = cx - sw / 2;
+      const y0 = cy - sh / 2;
+      const x1 = cx + sw / 2;
+      const y1 = cy + sh / 2;
+      if (nx >= x0 && nx <= x1 && ny >= y0 && ny <= y1) {
+        hit = f;
       }
     }
   }
+
+  if (!hit || (darkMode && hit.id !== 'lamp')) {
+    dwellStart = 0;
+    lastId = null;
+    currentHighlight = null;
+    requestRedraw();
+    return;
+  }
+
+  if (hit.id !== lastId) {
+    dwellStart = now;
+    lastId = hit.id;
+  }
+
+  const dt = now - dwellStart;
+  const scale = FEATURES.growingAOI ? Math.min(MAX_SCALE, 1 + dt * SCALE_RATE) : 1;
+
+  currentHighlight = {
+    id: hit.id,
+    label: hit.id.replace('_', ' ').toUpperCase(),
+    dwellTime: dt,
+    scale: scale,
+    x: hit.x,
+    y: hit.y,
+    w: hit.w,
+    h: hit.h
+  };
+
+  requestRedraw();
+
+  if (dt >= DWELL_THRESHOLD) {
+    dwellStart = now + 2500;
+    if (hit.id === 'lamp' && calibrated === true) {
+      toggleDarkMode();
+    } else {
+      const url = urlMap[hit.id];
+      if (url) window.open(url, '_blank');
+    }
+  }
+}
+
 
   function showLabel(id, x, y){
     const label = id.replace('_',' ').toUpperCase();
@@ -272,7 +348,7 @@
 
   function toggleDarkMode(){
     darkMode = !darkMode;
-    draw();
+    requestRedraw();
   }
 
   // ---- Calibration (unchanged) ----
@@ -334,6 +410,10 @@
     webgazer.applyKalmanFilter(FEATURES.use_kalman);
     console.log('use_kalman:', FEATURES.use_kalman);
   }
+  if (e.key === '1') {
+  FEATURES.use_euro = !FEATURES.use_euro;
+  console.log('use_euro:', FEATURES.use_euro);
+  }
   });
   webgazer
     .setGazeListener((data,ts) => {
@@ -341,13 +421,21 @@
       const lx = data.x - areaRect.left;
       const ly = data.y - areaRect.top;
       if(lx<0||ly<0||lx>canvas.width||ly>canvas.height) return;
-
-      if(emaX===null){
-        emaX = lx; emaY = ly;
+      let rawx, rawy;
+      if (FEATURES.use_euro) {
+        rawx = euroX.filter(lx, ts);
+        rawy = euroY.filter(ly, ts);
       } else {
-        emaX = ALPHA*lx + (1-ALPHA)*emaX;
-        emaY = ALPHA*ly + (1-ALPHA)*emaY;
+        rawx = lx;
+        rawy = ly;
       }
+      if (emaX === null) {
+          emaX = rawx; emaY = rawy;
+        } else {
+          emaX = ALPHA * rawx + (1 - ALPHA) * emaX;
+          emaY = ALPHA * rawy + (1 - ALPHA) * emaY;
+      }
+      
       gazeData.push({
           x: lx.toFixed(2),
           y: ly.toFixed(2),
